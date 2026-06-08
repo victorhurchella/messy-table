@@ -21,21 +21,25 @@ from messy_table.grid import Grid, SourceInfo
 _ENCODINGS = ("utf-8-sig", "cp1252", "latin-1")
 _CANDIDATE_DELIMITERS = ",;\t|"
 _SNIFF_SAMPLE = 64 * 1024
+# Control chars used as a "no delimiter" sentinel for single-column files. All are
+# non-NUL (NUL is rejected by csv on Python 3.10/3.11) and effectively never occur
+# in real CSV text. We pick the first one absent from the input.
+_SINGLE_COL_SENTINELS = ("\x1f", "\x1e", "\x01", "\x02")
 
 
 def read_csv(data: bytes, origin: str, kind: str, config: Config, ctx: Context) -> Grid:
     text, encoding = _decode(data)
     delimiter = "\t" if kind == "tsv" else _sniff_delimiter(text)
-    # A None delimiter means "single column" — use a char that cannot occur so
-    # csv keeps each line as one field (and a stray decimal comma is left alone).
-    effective = delimiter if delimiter is not None else "\x00"
+    # A None delimiter means "single column": feed csv a separator that does not
+    # occur in the text, so each line stays one field (quotes still honoured) and a
+    # stray decimal comma is left alone. NUL ('\x00') is unusable — Python 3.10/3.11
+    # reject it as a delimiter — so we pick a control char absent from the text.
+    if delimiter is not None:
+        effective, delimiter_name = delimiter, _name_delimiter(delimiter)
+    else:
+        effective, delimiter_name = _single_column_delimiter(text), "single-column"
 
-    source = SourceInfo(
-        origin=origin,
-        kind=kind,
-        encoding=encoding,
-        delimiter=_name_delimiter(delimiter) if delimiter is not None else "single-column",
-    )
+    source = SourceInfo(origin=origin, kind=kind, encoding=encoding, delimiter=delimiter_name)
     ctx.source = source
 
     reader = csv.reader(io.StringIO(text), delimiter=effective)
@@ -49,6 +53,14 @@ def read_csv(data: bytes, origin: str, kind: str, config: Config, ctx: Context) 
         ctx.warn("input parsed to zero rows", suggestion="check the file is not empty")
 
     return Grid(values=rows, source=source)
+
+
+def _single_column_delimiter(text: str) -> str:
+    """A 1-char delimiter guaranteed absent from ``text`` (for single-column input)."""
+    for sentinel in _SINGLE_COL_SENTINELS:
+        if sentinel not in text:
+            return sentinel
+    return _SINGLE_COL_SENTINELS[0]  # pragma: no cover - all sentinels present is absurd
 
 
 def _decode(data: bytes) -> tuple[str, str]:

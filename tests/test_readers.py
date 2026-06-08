@@ -108,3 +108,22 @@ def test_empty_input_returns_empty_result(tmp_path: Path) -> None:
 def test_undeterminable_format_raises() -> None:
     with pytest.raises(UnsupportedFormatError, match="determine format"):
         clean(b"   ")  # whitespace-only, no extension
+
+
+def test_single_column_takes_sentinel_path(tmp_path: Path) -> None:
+    # No candidate delimiter qualifies → single-column path → must parse via a
+    # sentinel that csv accepts on every Python (the \x00 sentinel broke 3.10/3.11).
+    path = _write_csv(tmp_path / "one.csv", "x\n1.5\n2,5\n")
+    result = clean(path)
+    assert result.source.delimiter == "single-column"
+    assert [c.name for c in result.columns] == ["x"]
+
+
+def test_single_column_sentinel_is_portable() -> None:
+    import csv as _csv
+
+    from messy_table.readers.csv import _single_column_delimiter
+
+    sentinel = _single_column_delimiter("anything\nhere\n")
+    assert sentinel != "\x00" and len(sentinel) == 1  # NUL is rejected on 3.10/3.11
+    list(_csv.reader(["a,b"], delimiter=sentinel))  # must not raise on any version
